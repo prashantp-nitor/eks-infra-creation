@@ -1,0 +1,162 @@
+name: Terraform Apply
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "terraform/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to apply (dev | staging | prod)"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      confirm:
+        description: 'Type "apply" to confirm'
+        required: true
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.7.5"
+  AWS_REGION: "us-east-1"
+
+jobs:
+  apply-dev:
+    name: Apply (dev)
+    runs-on: ubuntu-latest
+    environment: dev
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'dev' && github.event.inputs.confirm == 'apply')
+    concurrency:
+      group: terraform-dev
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_DEV }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform/environments/dev
+
+      - name: Terraform Plan
+        run: terraform plan -no-color -out=tfplan
+        working-directory: terraform/environments/dev
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: terraform/environments/dev
+
+      - name: Update kubeconfig
+        if: success()
+        run: |
+          CLUSTER_NAME=$(terraform -chdir=terraform/environments/dev output -raw cluster_name)
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name "$CLUSTER_NAME"
+
+  apply-staging:
+    name: Apply (staging)
+    runs-on: ubuntu-latest
+    environment: staging
+    needs: apply-dev
+    if: |
+      github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging' && github.event.inputs.confirm == 'apply')
+    concurrency:
+      group: terraform-staging
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_STAGING }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform/environments/staging
+
+      - name: Terraform Plan
+        run: terraform plan -no-color -out=tfplan
+        working-directory: terraform/environments/staging
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: terraform/environments/staging
+
+      - name: Update kubeconfig
+        if: success()
+        run: |
+          CLUSTER_NAME=$(terraform -chdir=terraform/environments/staging output -raw cluster_name)
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name "$CLUSTER_NAME"
+
+  apply-prod:
+    name: Apply (prod)
+    runs-on: ubuntu-latest
+    environment: prod   # Requires manual approval via GitHub environment protection rule
+    needs: apply-staging
+    if: |
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'prod' && github.event.inputs.confirm == 'apply')
+    concurrency:
+      group: terraform-prod
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN_PROD }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform/environments/prod
+
+      - name: Terraform Plan
+        run: terraform plan -no-color -out=tfplan
+        working-directory: terraform/environments/prod
+
+      - name: Terraform Apply
+        run: terraform apply -auto-approve tfplan
+        working-directory: terraform/environments/prod
+
+      - name: Update kubeconfig
+        if: success()
+        run: |
+          CLUSTER_NAME=$(terraform -chdir=terraform/environments/prod output -raw cluster_name)
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name "$CLUSTER_NAME"

@@ -1,0 +1,61 @@
+name: Terraform Destroy
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Environment to destroy"
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      confirm:
+        description: 'Type "destroy" to confirm — this is irreversible'
+        required: true
+        default: ""
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  TF_VERSION: "1.7.5"
+  AWS_REGION: "us-east-1"
+
+jobs:
+  destroy:
+    name: Destroy (${{ github.event.inputs.environment }})
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+    if: github.event.inputs.confirm == 'destroy'
+    concurrency:
+      group: terraform-${{ github.event.inputs.environment }}
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets[format('AWS_ROLE_ARN_{0}', upper(github.event.inputs.environment))] }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Terraform Init
+        run: terraform init
+        working-directory: terraform/environments/${{ github.event.inputs.environment }}
+
+      - name: Terraform Plan (destroy)
+        run: terraform plan -destroy -no-color -out=tfplan
+        working-directory: terraform/environments/${{ github.event.inputs.environment }}
+
+      - name: Terraform Destroy
+        run: terraform apply -auto-approve tfplan
+        working-directory: terraform/environments/${{ github.event.inputs.environment }}
